@@ -1,0 +1,95 @@
+# Non-secret configuration, mirroring docker-compose.yml / .env.example.
+# Secret values (DB credentials) live in secrets.yaml — see secrets.yaml.example
+# and NEVER commit the real secrets.yaml (it's gitignored).
+
+nameOverride: ""
+fullnameOverride: "travellog"
+
+image:
+  backend:
+    repository: travellog/backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  frontend:
+    repository: travellog/frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+
+backend:
+  replicaCount: 1
+  port: 8000
+  env:
+    sessionCookieName: session
+    sessionLifetimeHours: 168
+    cookieSecure: "false" # set "true" once TLS/ingress is in front of the app
+    corsOrigins: "http://localhost:5173"
+    loginMaxFailedAttempts: 5
+    loginFailureWindowMinutes: 15
+    loginLockoutMinutes: 15
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
+
+frontend:
+  replicaCount: 1
+  port: 80
+  # NOTE: VITE_API_URL is baked into the static bundle at IMAGE BUILD time
+  # (see frontend/Dockerfile ARG/ENV), not read at pod runtime. This value
+  # is passed as a pod env var for documentation only — it must match
+  # whatever the frontend image was actually built with, or rebuild the
+  # image with --build-arg VITE_API_URL=... to change it.
+  env:
+    viteApiUrl: "http://localhost:8000"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  nodeSelector: {}
+  tolerations: []
+
+mysql:
+  image: mysql:8.4
+  port: 3306
+  database: travel_log
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  # Mirrors the project's app/data/obs node-group design (.claude/project-spec.md):
+  # MySQL is pinned to the "data" node group once that group exists.
+  nodeSelector: {}
+  tolerations: []
+  # Example once EKS data node group (level 27) exists:
+  # nodeSelector:
+  #   role: data
+  # tolerations:
+  #   - key: role
+  #     operator: Equal
+  #     value: data
+  #     effect: NoSchedule
+
+ingress:
+  enabled: false
+  className: nginx # "alb" switches to the single-Ingress AWS ALB layout
+  host: travellog.local # may be "" with alb (catch-all — any Host header)
+  # Extra ingress annotations (used by the alb branch for cert ARN, SGs, etc.)
+  annotations: {}
+  tls:
+    enabled: false
+    secretName: travellog-tls

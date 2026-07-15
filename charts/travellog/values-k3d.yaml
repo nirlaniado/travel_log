@@ -1,0 +1,39 @@
+# Local k3d rehearsal overlay (.claude/levels/level-24-kind-manifests.md,
+# level-26-kind-ingress-tls.md) — pins workloads to the labeled/tainted
+# node roles so scheduling mirrors the eventual EKS node-group design
+# (.claude/project-spec.md). Not used for the EC2 path.
+
+image:
+  backend:
+    repository: travellog/backend
+    tag: local
+    pullPolicy: IfNotPresent
+  frontend:
+    repository: travellog/frontend
+    tag: local
+    pullPolicy: IfNotPresent
+
+backend:
+  nodeSelector:
+    role: app
+
+frontend:
+  nodeSelector:
+    role: app
+
+mysql:
+  nodeSelector:
+    role: data
+  tolerations:
+    - key: role
+      operator: Equal
+      value: data
+      effect: NoSchedule
+
+ingress:
+  enabled: true
+  className: nginx
+  host: travellog.127.0.0.1.nip.io
+  tls:
+    enabled: true
+    secretName: travellog-tls

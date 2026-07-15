@@ -77,6 +77,20 @@ The backup script reads MySQL and S3 settings from `.env`, then uploads both the
 
 If `mysqldump` is not installed on the host, the script falls back to `docker compose exec db mysqldump`. That requires the Compose stack to be running and Docker to be available inside the current WSL distro.
 
+## Tearing down EKS
+
+`terraform destroy` alone can fail partway through with "Kubernetes cluster
+unreachable" — `infra/helm.tf`'s kubernetes/helm providers authenticate via
+the EKS cluster's own attributes, so removing cluster-dependent resources
+(the app, Loki, Prometheus, the ALB controller, the storage-class annotation)
+out of order breaks their auth. Use the two-phase script instead:
+
+```bash
+./scripts/terraform_destroy_eks.sh          # dry run — plans both phases, applies nothing
+./scripts/terraform_destroy_eks.sh --yes    # destroys the cluster-dependent resources first,
+                                             # then everything else, then verifies via the AWS API
+```
+
 ## Manual setup (without Docker)
 
 ### 1. Database

@@ -1,0 +1,24 @@
+Travel Logs deployed as release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+First time here? You need a secrets.yaml next to values.yaml:
+
+  cp charts/travellog/secrets.yaml.example charts/travellog/secrets.yaml
+  # edit secrets.yaml with real values — it is gitignored, never commit it
+
+Install / upgrade with both values files layered:
+
+  helm upgrade --install travellog charts/travellog \
+    -f charts/travellog/values.yaml \
+    -f charts/travellog/secrets.yaml
+
+Check status:
+
+  kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+
+{{- if .Values.ingress.enabled }}
+App will be reachable at: http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}
+{{- else }}
+Ingress is disabled — port-forward to reach the app:
+  kubectl port-forward svc/{{ include "travellog.fullname" . }}-frontend 8080:{{ .Values.frontend.port }}
+  kubectl port-forward svc/{{ include "travellog.fullname" . }}-backend 8000:{{ .Values.backend.port }}
+{{- end }}

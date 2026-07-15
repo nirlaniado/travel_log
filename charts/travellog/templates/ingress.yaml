@@ -1,0 +1,114 @@
+{{- if .Values.ingress.enabled -}}
+{{- if eq .Values.ingress.className "alb" }}
+# ALB (AWS Load Balancer Controller): one Ingress, no rewrite — ALB can't
+# rewrite paths, so the backend strips its own /api prefix (see
+# ApiPrefixMiddleware in backend/app/main.py). TLS terminates at the ALB via
+# ACM; annotations (cert ARN, security groups, etc.) come from values.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "travellog.fullname" . }}
+  labels:
+    {{- include "travellog.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: alb
+  rules:
+    - {{- if .Values.ingress.host }}
+      host: {{ .Values.ingress.host }}
+      {{- end }}
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "travellog.fullname" . }}-backend
+                port:
+                  number: {{ .Values.backend.port }}
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "travellog.fullname" . }}-backend
+                port:
+                  number: {{ .Values.backend.port }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "travellog.fullname" . }}-frontend
+                port:
+                  number: {{ .Values.frontend.port }}
+{{- else }}
+# nginx: two Ingress objects, because the rewrite-target annotation applies to
+# the whole object, not per-path — the /api prefix-strip rule (regex capture)
+# must not share an object with the plain /health and / rules.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "travellog.fullname" . }}-api
+  labels:
+    {{- include "travellog.labels" . | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: {{ include "travellog.fullname" . }}-backend
+                port:
+                  number: {{ .Values.backend.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "travellog.fullname" . }}
+  labels:
+    {{- include "travellog.labels" . | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "travellog.fullname" . }}-backend
+                port:
+                  number: {{ .Values.backend.port }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "travellog.fullname" . }}-frontend
+                port:
+                  number: {{ .Values.frontend.port }}
+{{- end }}
+{{- end }}

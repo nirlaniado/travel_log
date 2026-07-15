@@ -1,0 +1,63 @@
+# Level 29: CD to EKS — push to main → build → push to ECR → helm upgrade.
+# Keyless: assumes the travellog-github-deploy role via OIDC (created by
+# infra/github-oidc.tf once `github_repo` is set; put its ARN in the
+# AWS_DEPLOY_ROLE_ARN repo variable). Fails harmlessly while the EKS stack
+# is destroyed — expected between sessions per the ephemeral-EKS invariant.
+name: deploy-eks
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write # required for OIDC
+  contents: read
+
+env:
+  AWS_REGION: eu-north-1
+  CLUSTER_NAME: travellog-eks
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      - name: Build and push images
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          docker build -t "$REGISTRY/travellog/backend:${GITHUB_SHA}" ./backend
+          docker build -t "$REGISTRY/travellog/frontend:${GITHUB_SHA}" \
+            --build-arg VITE_API_URL=/api ./frontend
+          docker push "$REGISTRY/travellog/backend:${GITHUB_SHA}"
+          docker push "$REGISTRY/travellog/frontend:${GITHUB_SHA}"
+
+      - name: Deploy with Helm
+        run: |
+          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
+          helm upgrade travellog charts/travellog --reuse-values \
+            --set image.backend.tag="${GITHUB_SHA}" \
+            --set image.frontend.tag="${GITHUB_SHA}" \
+            --wait --timeout 10m
+
+      - name: Smoke test
+        run: |
+          kubectl rollout status deployment/travellog-backend --timeout=120s
+          kubectl rollout status deployment/travellog-frontend --timeout=120s
+          HOST=$(kubectl get ingress travellog -o jsonpath='{.spec.rules[0].host}')
+          for i in $(seq 1 10); do
+            code=$(curl -sk -o /dev/null -w '%{http_code}' "https://${HOST}/health") && [ "$code" = "200" ] && break
+            sleep 5
+          done
+          [ "$code" = "200" ] || { echo "post-deploy /health returned $code"; exit 1; }
+          body=$(curl -sk "https://${HOST}/health")
+          echo "$body" | grep -q '"db":"ok"' || { echo "health degraded: $body"; exit 1; }

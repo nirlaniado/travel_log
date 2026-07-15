@@ -1,0 +1,6 @@
+apiVersion: v2
+name: travellog
+description: Travel Logs — FastAPI + MySQL + React/nginx (converted from docker-compose.yml)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

@@ -1,0 +1,46 @@
+# EKS overlay (level 28) — layered on top of values.yaml by the terraform
+# helm_release in infra/helm.tf, which also injects the dynamic bits (ECR
+# image repos/tags, nip.io ingress host, CORS origin) and the secrets.
+#
+# IMPORTANT: images pushed to ECR for EKS must be built with
+#   --build-arg VITE_API_URL=/api
+# (relative path — same-origin through the ingress), since VITE_API_URL is
+# baked into the frontend bundle at build time.
+
+backend:
+  replicaCount: 2
+  env:
+    cookieSecure: "true" # TLS terminates at the ingress
+  nodeSelector:
+    role: app
+
+frontend:
+  replicaCount: 2
+  env:
+    viteApiUrl: "/api"
+  nodeSelector:
+    role: app
+
+mysql:
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClassName: gp2 # served by the aws-ebs-csi-driver addon
+  nodeSelector:
+    role: data
+  tolerations:
+    - key: role
+      operator: Equal
+      value: data
+      effect: NoSchedule
+
+ingress:
+  enabled: true
+  className: alb
+  # No host rule: catch-all, so the app answers on the ALB hostname, the
+  # nip.io alias, and the Route 53 name alike. ALB annotations (ACM cert,
+  # security groups, ssl-redirect...) are injected by infra/helm.tf.
+  host: ""
+  # TLS terminates at the ALB via ACM — no in-cluster tls secret needed.
+  tls:
+    enabled: false

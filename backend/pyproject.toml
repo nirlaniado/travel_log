@@ -1,0 +1,10 @@
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["B008"] # FastAPI's Depends()/Query() pattern is fine as a call in a default arg
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]

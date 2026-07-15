@@ -1,0 +1,31 @@
+# Environment
+.env
+backend/.env
+frontend/.env
+charts/travellog/secrets.yaml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# Terraform (commit .terraform.lock.hcl — it pins provider versions)
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/terraform.tfvars
+infra/secrets.auto.tfvars
+infra/crash.log
+
+# Editor
+.vscode/
+.idea/
