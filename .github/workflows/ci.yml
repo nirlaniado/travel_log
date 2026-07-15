@@ -1,13 +1,38 @@
 # CI — runs on every push, any branch. Validates the code; never deploys
 # anything (that's cd.yml / deploy-eks.yml, main-only). See
 # .claude/levels/level-08-ci-lint-test.md and level-09-ci-build-images.md.
+#
+# `changes` gates every other job on whether backend/ or frontend/ actually
+# changed, so e.g. a docs-only or infra-only push doesn't spin up 5 runners
+# to lint/test code that didn't move. deploy-eks.yml (workflow_run on this
+# workflow) relies on this workflow's overall conclusion being "success"
+# even when everything below was skipped.
 name: ci
 
 on:
   push:
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+            frontend:
+              - 'frontend/**'
+
   backend-lint:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +50,8 @@ jobs:
         working-directory: backend
 
   backend-test:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +75,8 @@ jobs:
         run: pytest -q
 
   frontend-lint:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,11 +88,14 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - run: npm ci
+        working-directory: frontend
 
       - run: npm run lint
         working-directory: frontend
 
   frontend-test:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,6 +113,8 @@ jobs:
         working-directory: frontend
 
   frontend-build:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -101,12 +135,22 @@ jobs:
 
   build-images:
     runs-on: ubuntu-latest
-    needs: [backend-lint, backend-test, frontend-lint, frontend-test, frontend-build]
+    needs: [changes, backend-lint, backend-test, frontend-lint, frontend-test, frontend-build]
+    # `needs` jobs that were skipped (nothing changed in their path) still
+    # count as "not failure" here — only a real failure/cancellation blocks
+    # this job. Without `always()`, a skipped dependency would skip this too.
+    if: |
+      always() &&
+      (needs.changes.outputs.backend == 'true' || needs.changes.outputs.frontend == 'true') &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
     steps:
       - uses: actions/checkout@v4
 
       - name: Build backend image
+        if: needs.changes.outputs.backend == 'true'
         run: docker build -t travellog/backend:ci ./backend
 
       - name: Build frontend image
+        if: needs.changes.outputs.frontend == 'true'
         run: docker build -t travellog/frontend:ci --build-arg VITE_API_URL=/api ./frontend

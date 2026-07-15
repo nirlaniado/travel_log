@@ -1,17 +1,29 @@
-# Level 29: CD to EKS — push to main → build → push to ECR → helm upgrade.
-# Keyless: assumes the travellog-github-deploy role via OIDC (created by
-# infra/github-oidc.tf once `github_repo` is set; put its ARN in the
-# AWS_DEPLOY_ROLE_ARN repo variable). Fails harmlessly while the EKS stack
-# is destroyed — expected between sessions per the ephemeral-EKS invariant.
+# Level 29: CD to EKS. Triggered by `ci` finishing on main (workflow_run),
+# not directly by push — this is how "only deploy if CI passed" is enforced
+# across two separate workflow files. Keyless: assumes the
+# travellog-github-deploy role via OIDC (created by infra/github-oidc.tf
+# once `github_repo` is set; put its ARN in the AWS_DEPLOY_ROLE_ARN repo
+# variable). Fails harmlessly while the EKS stack is destroyed — expected
+# between sessions per the ephemeral-EKS invariant.
+#
+# Versioning: a single vMAJOR.MINOR tag applies to both images together
+# (they're one Helm release). The last deployed version lives in git tags
+# (source of truth survives across workflow runs, unlike anything in-memory
+# in Actions). Each run diffs backend/frontend against the last tag; if
+# nothing in either changed, the whole job is a no-op (no build, no push,
+# no helm upgrade) — this is what makes "push to ECR only if the image
+# would actually differ" true without diffing image bytes.
 name: deploy-eks
 
 on:
-  push:
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
     branches: [main]
 
 permissions:
   id-token: write # required for OIDC
-  contents: read
+  contents: write # required to push the new version tag
 
 env:
   AWS_REGION: eu-north-1
@@ -19,37 +31,74 @@ env:
 
 jobs:
   deploy:
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0 # full history + tags: needed to diff against the last version tag
+          fetch-tags: true
+
+      - name: Determine version and whether to deploy
+        id: version
+        run: |
+          LAST_TAG=$(git tag --list 'v[0-9]*.[0-9]*' | sort -V | tail -n1)
+
+          if [ -z "$LAST_TAG" ]; then
+            echo "No prior version tag — first deploy."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "version=v1.0" >> "$GITHUB_OUTPUT"
+          else
+            if git diff --quiet "$LAST_TAG" HEAD -- backend frontend; then
+              echo "No backend/frontend changes since $LAST_TAG — nothing to deploy."
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              echo "version=$LAST_TAG" >> "$GITHUB_OUTPUT"
+            else
+              MAJOR=$(echo "$LAST_TAG" | sed 's/^v//' | cut -d. -f1)
+              MINOR=$(echo "$LAST_TAG" | sed 's/^v//' | cut -d. -f2)
+              NEW_VERSION="v${MAJOR}.$((MINOR + 1))"
+              echo "backend/frontend changed since $LAST_TAG — bumping to $NEW_VERSION."
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+            fi
+          fi
 
       - uses: aws-actions/configure-aws-credentials@v4
+        if: steps.version.outputs.changed == 'true'
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: aws-actions/amazon-ecr-login@v2
+        if: steps.version.outputs.changed == 'true'
         id: ecr
 
       - name: Build and push images
+        if: steps.version.outputs.changed == 'true'
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          docker build -t "$REGISTRY/travellog/backend:${GITHUB_SHA}" ./backend
-          docker build -t "$REGISTRY/travellog/frontend:${GITHUB_SHA}" \
+          docker build -t "$REGISTRY/travellog/backend:${VERSION}" ./backend
+          docker build -t "$REGISTRY/travellog/frontend:${VERSION}" \
             --build-arg VITE_API_URL=/api ./frontend
-          docker push "$REGISTRY/travellog/backend:${GITHUB_SHA}"
-          docker push "$REGISTRY/travellog/frontend:${GITHUB_SHA}"
+          docker push "$REGISTRY/travellog/backend:${VERSION}"
+          docker push "$REGISTRY/travellog/frontend:${VERSION}"
 
       - name: Deploy with Helm
+        if: steps.version.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
           helm upgrade travellog charts/travellog --reuse-values \
-            --set image.backend.tag="${GITHUB_SHA}" \
-            --set image.frontend.tag="${GITHUB_SHA}" \
+            --set image.backend.tag="${VERSION}" \
+            --set image.frontend.tag="${VERSION}" \
             --wait --timeout 10m
 
       - name: Smoke test
+        if: steps.version.outputs.changed == 'true'
         run: |
           kubectl rollout status deployment/travellog-backend --timeout=120s
           kubectl rollout status deployment/travellog-frontend --timeout=120s
@@ -61,3 +110,11 @@ jobs:
           [ "$code" = "200" ] || { echo "post-deploy /health returned $code"; exit 1; }
           body=$(curl -sk "https://${HOST}/health")
           echo "$body" | grep -q '"db":"ok"' || { echo "health degraded: $body"; exit 1; }
+
+      - name: Tag release
+        if: steps.version.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git tag "$VERSION"
+          git push origin "$VERSION"
